@@ -6,6 +6,7 @@ LDFLAGS = -lSDL2
 
 bin/c8_emu: $(obj)
 	mkdir -p bin
+	cp resources/* bin/
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 .PHONY: clean

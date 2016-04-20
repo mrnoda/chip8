@@ -17,6 +17,14 @@ const int C8_FPS = 300;
 /* Static storage. */
 SDL_Window *window = NULL;
 SDL_Surface *back_buffer = NULL;
+const char *wav_file = "beep.wav";
+
+/* Audio */
+Uint8 *audio_pos;
+Uint32 audio_len;
+Uint32 wav_length;
+Uint8 *wav_buffer;
+SDL_AudioSpec wav_spec;
 
 /* Print the status of the C8 machine. */
 static void c8_print(struct chip8 *c8);
@@ -34,6 +42,12 @@ static void c8_display_update(struct chip8 *c8);
 static void c8_display_draw(void);
 static void c8_keyboard_init(struct chip8 *c8);
 static void c8_handle_key_event(SDL_KeyboardEvent *key, struct chip8 *c8);
+
+/* Sound */
+static bool c8_audio_init(void);
+static void c8_audio_destroy(void);
+static void c8_audio_callback(void *userdata, Uint8 *stream, int len);
+static void c8_audio_beep(void);
 
 const uint8_t C8_FONTSET[] = 
 { 
@@ -94,8 +108,12 @@ bool c8_init(struct chip8 *c8, struct c8_cpu *cpu)
         return false;
     }
 
-    /* Keyboard Init. */
     c8_keyboard_init(c8);
+    if (!c8_audio_init())
+    {
+        fprintf(stderr, "Failed to initialise audio\n");
+        return false;
+    }
 
     /* Flush the SDL input event queue to prevent KEYDOWN on startup. */
     SDL_PumpEvents();
@@ -109,25 +127,6 @@ bool c8_init(struct chip8 *c8, struct c8_cpu *cpu)
     return true;
 }
 
-void c8_keyboard_init(struct chip8 *c8)
-{
-    KEYMAP[0]   = SDLK_x;
-    KEYMAP[1]   = SDLK_1;
-    KEYMAP[2]   = SDLK_2;
-    KEYMAP[3]   = SDLK_3;
-    KEYMAP[4]   = SDLK_q;
-    KEYMAP[5]   = SDLK_w;
-    KEYMAP[6]   = SDLK_e;
-    KEYMAP[7]   = SDLK_a;
-    KEYMAP[8]   = SDLK_s;
-    KEYMAP[9]   = SDLK_d;
-    KEYMAP[0xA] = SDLK_z;
-    KEYMAP[0xB] = SDLK_c;
-    KEYMAP[0xC] = SDLK_4;
-    KEYMAP[0xD] = SDLK_r;
-    KEYMAP[0xE] = SDLK_f;
-    KEYMAP[0xF] = SDLK_v;
-}
 
 ssize_t c8_load(char *filename, struct chip8 *c8, uint16_t address)
 {
@@ -187,6 +186,8 @@ void c8_destroy(struct chip8 *c8)
 {
     printf("CHIP-8 Destroy\n");
     c8_display_destroy();
+    c8_audio_destroy();
+    SDL_Quit();
 }
 
 uint8_t c8_mem_read8(struct chip8 *c8, uint16_t addr)
@@ -230,13 +231,14 @@ uint8_t c8_key_await(struct chip8 *c8)
 
 static void c8_print(struct chip8 *c8)
 {
-    printf("[PC:%#04x, SP:%#04x, I:%#04x, OP:%#04x]\n", 
-            c8->cpu->pc, c8->cpu->sp, c8->cpu->i, c8_mem_read16(c8, c8->cpu->pc));
+    printf("[PC:%#04x, SP:%#04x, I:%#04x, OP:%#04x]\n[TIMER_DELAY:%#04x, TIMER_SND:%#04x]\n", 
+            c8->cpu->pc, c8->cpu->sp, c8->cpu->i, c8_mem_read16(c8, c8->cpu->pc), 
+            c8->cpu->timer_delay, c8->cpu->timer_sound);
     for (int i = 0; i <= 0xF; i++)
     {
         printf("\tv%x:%04x    s%x:%#04x\n", i, c8->cpu->v[i], i, c8->cpu->stack[i]);
     }
-    printf("--------------------------------------\n");
+    printf("-------------------------------------------\n");
 }
 
 static bool c8_display_init(void)
@@ -244,14 +246,14 @@ static bool c8_display_init(void)
     static const int DISPLAY_WIDTH = 640;
     static const int DISPLAY_HEIGHT = 480;
 
-    if (SDL_Init(SDL_INIT_VIDEO) != 0)
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0)
     {
         fprintf(stderr, "Failed to init SDL: %s\n", SDL_GetError());
         return false;
     }
 
     window = SDL_CreateWindow(C8_WINDOW_TITLE, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 
-         DISPLAY_WIDTH, DISPLAY_HEIGHT, SDL_WINDOW_SHOWN | 0);
+         DISPLAY_WIDTH, DISPLAY_HEIGHT, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
     if (window == NULL)
     {
         fprintf(stderr, "Failed to create SDL Window: %s\n", SDL_GetError());
@@ -273,7 +275,6 @@ static void c8_display_destroy(void)
     printf("Destroying SDL context\n");
     SDL_FreeSurface(back_buffer);
     SDL_DestroyWindow(window);
-    SDL_Quit();
 }
 
 static void c8_process_flags(struct chip8 *c8)
@@ -286,6 +287,7 @@ static void c8_process_flags(struct chip8 *c8)
 
     if (c8->beep)
     {
+        c8_audio_beep();
         c8->beep = false;
     }
 }
@@ -298,7 +300,6 @@ static void c8_handle_key_event(SDL_KeyboardEvent *key_event, struct chip8 *c8)
         c8->alive = false;
         return;
     }
-
     for (int index = 0; index < 16; index++)
     {
         if (key.sym == KEYMAP[index])
@@ -340,12 +341,81 @@ static void c8_display_update(struct chip8 *c8)
             rect.x = x;
             if (c8->display[x + y * C8_DISPLAY_WIDTH] > 0)
             {
-                SDL_FillRect(back_buffer, &rect, SDL_MapRGB(back_buffer->format, 0xFF, 0xFF, 0xFF));
+                SDL_FillRect(back_buffer, &rect, SDL_MapRGB(back_buffer->format, 0x00, 0xFF, 0x00));
             }
         }
     } 
 
     SDL_BlitScaled(back_buffer, NULL, SDL_GetWindowSurface(window), NULL);
+}
+
+static bool c8_audio_init(void)
+{
+    if (SDL_LoadWAV(wav_file, &wav_spec, &wav_buffer, &wav_length) == NULL)
+    {
+        fprintf(stderr, "Failed to load wav file: %s\n", SDL_GetError());
+        return false;
+    }
+
+    wav_spec.callback = c8_audio_callback;
+    wav_spec.userdata = NULL;
+
+    if (SDL_OpenAudio(&wav_spec, NULL) < 0)
+    {
+        fprintf(stderr, "Failed to open audio device: %s\n", SDL_GetError());
+        return false;
+    }
+
+    return true;
+}
+
+static void c8_audio_destroy(void)
+{
+    SDL_FreeWAV(wav_buffer);
+}
+
+static void c8_audio_callback(void *userdata, Uint8 *stream, int len)
+{
+    if (audio_len == 0)
+    {
+        return;
+    }
+    len = (len > audio_len ? audio_len : len);
+    SDL_MixAudio(stream, audio_pos, len, SDL_MIX_MAXVOLUME);
+    audio_pos += len;
+    audio_len -= len;
+}
+
+static void c8_audio_beep(void)
+{
+    audio_pos = wav_buffer;
+    audio_len = wav_length;
+    SDL_PauseAudio(0);
+    while (audio_len > 0)
+    {
+        SDL_Delay(10);
+    }
+    SDL_PauseAudio(1);
+}
+
+static void c8_keyboard_init(struct chip8 *c8)
+{
+    KEYMAP[0]   = SDLK_x;
+    KEYMAP[1]   = SDLK_1;
+    KEYMAP[2]   = SDLK_2;
+    KEYMAP[3]   = SDLK_3;
+    KEYMAP[4]   = SDLK_q;
+    KEYMAP[5]   = SDLK_w;
+    KEYMAP[6]   = SDLK_e;
+    KEYMAP[7]   = SDLK_a;
+    KEYMAP[8]   = SDLK_s;
+    KEYMAP[9]   = SDLK_d;
+    KEYMAP[0xA] = SDLK_z;
+    KEYMAP[0xB] = SDLK_c;
+    KEYMAP[0xC] = SDLK_4;
+    KEYMAP[0xD] = SDLK_r;
+    KEYMAP[0xE] = SDLK_f;
+    KEYMAP[0xF] = SDLK_v;
 }
 
 static void c8_display_draw(void)
