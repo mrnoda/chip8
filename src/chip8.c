@@ -253,7 +253,7 @@ static bool c8_display_init(void)
     }
 
     window = SDL_CreateWindow(C8_WINDOW_TITLE, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 
-         DISPLAY_WIDTH, DISPLAY_HEIGHT, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
+         DISPLAY_WIDTH, DISPLAY_HEIGHT, SDL_WINDOW_SHOWN | 0);
     if (window == NULL)
     {
         fprintf(stderr, "Failed to create SDL Window: %s\n", SDL_GetError());
