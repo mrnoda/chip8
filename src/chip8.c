@@ -372,6 +372,7 @@ static bool c8_audio_init(void)
 static void c8_audio_destroy(void)
 {
     SDL_FreeWAV(wav_buffer);
+    SDL_CloseAudio();
 }
 
 static void c8_audio_callback(void *userdata, Uint8 *stream, int len)
