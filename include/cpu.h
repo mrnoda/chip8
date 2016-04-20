@@ -51,7 +51,7 @@ void cpu_init(struct c8_cpu *cpu);
 /* 
  * Fetch, decode, and execute a single CHIP-8 instruction. Return true if the instruction was 
  * succesfully executed, false otherwise. Error messages will be written to STDERR.
- * */
+ */
 bool cpu_step(struct chip8 *c8);
 
 #endif /* C8_CPU_H */

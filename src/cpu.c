@@ -59,7 +59,7 @@ bool cpu_step(struct chip8 *c8)
             {
                 case 0xE0:
                     // 0x00E0: clear the display
-                    memset(&c8->display[0], 0, sizeof c8->display);
+                    memset(&c8->display, 0, sizeof c8->display);
                     c8->draw = true;
                     break;
                 case 0xEE:
@@ -125,7 +125,7 @@ bool cpu_step(struct chip8 *c8)
                 {
                     // 0x8XY4: add vy to vx, vf is set to 1 when there is carry, 0 when not
                     uint16_t result16 = (uint16_t)cpu->v[OP_X] + (uint16_t)cpu->v[OP_Y];
-                    cpu->v[OP_Y] = (uint8_t)result16;
+                    cpu->v[OP_X] = (uint8_t)result16;
                     cpu->v[0xF] = result16 > 0xFF ? 1 : 0;
                     break;
                 }
@@ -138,9 +138,9 @@ bool cpu_step(struct chip8 *c8)
                     break;
                 }
                 case 0x6:
-                    // 0x8XY6: shift vx right by one, vf is set to the lsb of vx before the shift
-                    cpu->v[0xF] = cpu->v[OP_X] & 1;
-                    cpu->v[OP_X] >>= 1;
+                    // 0x8XY6: store the value of vy shifted one bit right in vx, set vf to lsb(vf) prior to the shift
+                    cpu->v[0xF] = cpu->v[OP_Y] & 1;
+                    cpu->v[OP_X] = cpu->v[OP_Y] >> 1;
                     break;
                 case 0x7:
                 {
@@ -152,7 +152,7 @@ bool cpu_step(struct chip8 *c8)
                 }
                 case 0xE:
                     // 0x8XYE: store vy shifted one bit left in vx, set vf to the msb of vx prior to shift
-                    cpu->v[0xF] = cpu->v[OP_X] >> 7;
+                    cpu->v[0xF] = cpu->v[OP_Y] >> 7;
                     cpu->v[OP_X] = cpu->v[OP_Y] << 1;
                     break;
                 default:
@@ -173,16 +173,15 @@ bool cpu_step(struct chip8 *c8)
             break;
         case 0xC000:
             // 0xCXNN: set VX to the result of bitwise AND between NN and rand(0,255)
-            cpu->v[OP_X] = (rand() & 0x256) & OP_NN;
+            cpu->v[OP_X] = (rand() % 256) & OP_NN;
             break;
         case 0xD000:
         {
-            // 0xDXYN: sprite drawing TODO: review algorithm
+            // 0xDXYN: sprite drawing
             const uint8_t HEIGHT = OP_N;
             const uint8_t X = cpu->v[OP_X];
             const uint8_t Y = cpu->v[OP_Y];
 
-            // Clear the collision flag, it will be set if necessary within the loop
             cpu->v[0xF] = 0;
             c8->draw = true;
             for (int row = 0; row < HEIGHT; row++)
@@ -199,7 +198,6 @@ bool cpu_step(struct chip8 *c8)
                         c8->display[column+X+(row+Y)*C8_DISPLAY_WIDTH] ^= 1;
                     }
                 }
-
             }
             break;
         }
@@ -212,7 +210,7 @@ bool cpu_step(struct chip8 *c8)
                     break;
                 case 0xA1: 
                     // 0xEXA1: skip the next instruction if the key stored in vx is not pressed
-                    cpu->pc += !c8_key_pressed(c8, cpu->v[OP_X]) ? C8_INS_LEN : 0;
+                    cpu->pc += c8_key_pressed(c8, cpu->v[OP_X]) ? 0: C8_INS_LEN;
                     break;
                 default:
                     goto illegal_op;
@@ -222,7 +220,8 @@ bool cpu_step(struct chip8 *c8)
             switch (OP & 0xFF)
             {
                 case 0x07:
-                    // 0xFX07: set vx to the value of the delay timer
+                    // 0xFX07: store the current value of the delay timer in VX
+                 
                     cpu->v[OP_X] = cpu->timer_delay;
                     break;
                 case 0x0A:

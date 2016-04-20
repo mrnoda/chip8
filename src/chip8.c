@@ -12,6 +12,7 @@ const uint16_t C8_MAX_ADDR = 0x1000;
 const uint16_t C8_LOAD_ADDR = 0x200;
 const size_t C8_SPRITE_LEN = 5;
 const char *C8_WINDOW_TITLE = "CHIP-8";
+const int C8_FPS = 300;
 
 /* Static storage. */
 SDL_Window *window = NULL;
@@ -31,8 +32,10 @@ static bool c8_display_init(void);
 static void c8_display_destroy(void);
 static void c8_display_update(struct chip8 *c8);
 static void c8_display_draw(void);
+static void c8_keyboard_init(struct chip8 *c8);
+static void c8_handle_key_event(SDL_KeyboardEvent *key, struct chip8 *c8);
 
-uint8_t c8_fontset[] = 
+const uint8_t C8_FONTSET[] = 
 { 
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
     0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -52,6 +55,25 @@ uint8_t c8_fontset[] =
     0xF0, 0x80, 0xF0, 0x80, 0x80  // F
 };
 
+/*
+ * An ordered mapping of SDL keyboard symbols representing the configured input keys for 
+ * manipulating the CHIP-8 keyboard. The index of the symbol represents the CHIP8 key that 
+ * will be considered the source of any event raised. The following diagram illustrates the 
+ * mapping of each key on a standard keyboard to the CHIP-8 keyboard:
+ *
+ * Keypad                   Keyboard
+ * +-+-+-+-+                +-+-+-+-+
+ * |1|2|3|C|                |1|2|3|C|
+ * +-+-+-+-+                +-+-+-+-+
+ * |4|5|6|D|                |Q|W|E|R|
+ * +-+-+-+-+      =>        +-+-+-+-+
+ * |7|8|9|E|                |A|S|D|F|
+ * +-+-+-+-+                +-+-+-+-+
+ * |A|0|B|F|                |Z|X|C|V|
+ * +-+-+-+-+                +-+-+-+-+
+ */
+int KEYMAP[16];
+
 bool c8_init(struct chip8 *c8, struct c8_cpu *cpu)
 {
     /* CPU init. */
@@ -60,9 +82,9 @@ bool c8_init(struct chip8 *c8, struct c8_cpu *cpu)
 
     /* Clear memory, then inject the chip8 fontset at the start address. */
     memset(c8->memory, 0, sizeof c8->memory);
-    for (int i = 0; i < sizeof c8_fontset; i++)
+    for (int i = 0; i < sizeof C8_FONTSET; i++)
     {
-        c8->memory[i] = c8_fontset[i];
+        c8->memory[i] = C8_FONTSET[i];
     }
 
     /* Display init. */
@@ -72,15 +94,39 @@ bool c8_init(struct chip8 *c8, struct c8_cpu *cpu)
         return false;
     }
 
+    /* Keyboard Init. */
+    c8_keyboard_init(c8);
+
     /* Flush the SDL input event queue to prevent KEYDOWN on startup. */
     SDL_PumpEvents();
     SDL_FlushEvent(SDL_KEYDOWN);
+    SDL_FlushEvent(SDL_KEYUP);
 
     /* Flags init. */
     c8->draw = false;
     c8->beep = false;
 
     return true;
+}
+
+void c8_keyboard_init(struct chip8 *c8)
+{
+    KEYMAP[0]   = SDLK_x;
+    KEYMAP[1]   = SDLK_1;
+    KEYMAP[2]   = SDLK_2;
+    KEYMAP[3]   = SDLK_3;
+    KEYMAP[4]   = SDLK_q;
+    KEYMAP[5]   = SDLK_w;
+    KEYMAP[6]   = SDLK_e;
+    KEYMAP[7]   = SDLK_a;
+    KEYMAP[8]   = SDLK_s;
+    KEYMAP[9]   = SDLK_d;
+    KEYMAP[0xA] = SDLK_z;
+    KEYMAP[0xB] = SDLK_c;
+    KEYMAP[0xC] = SDLK_4;
+    KEYMAP[0xD] = SDLK_r;
+    KEYMAP[0xE] = SDLK_f;
+    KEYMAP[0xF] = SDLK_v;
 }
 
 ssize_t c8_load(char *filename, struct chip8 *c8, uint16_t address)
@@ -114,8 +160,10 @@ int c8_run(struct chip8 *c8, uint16_t start_address)
     printf("CHIP-8 Run\n");
     c8->cpu->pc = start_address;
     c8->alive = true;
+    Uint32 start;
     while (c8->alive)
     {
+        start = SDL_GetTicks();
         c8_print(c8);
         if (!cpu_step(c8))
         {
@@ -125,7 +173,13 @@ int c8_run(struct chip8 *c8, uint16_t start_address)
         c8_process_input(c8);
         c8_process_flags(c8);
         c8_display_draw();
+
+        if (1000/C8_FPS > SDL_GetTicks() - start)
+        {
+            SDL_Delay(1000/C8_FPS-(SDL_GetTicks()-start));
+        }
     }
+    c8_destroy(c8);
     return 0;
 }
 
@@ -133,7 +187,6 @@ void c8_destroy(struct chip8 *c8)
 {
     printf("CHIP-8 Destroy\n");
     c8_display_destroy();
-    c8->alive = false;
 }
 
 uint8_t c8_mem_read8(struct chip8 *c8, uint16_t addr)
@@ -155,15 +208,24 @@ void c8_mem_write8(struct chip8 *c8, uint16_t addr, uint8_t value)
     assert(addr <= C8_MAX_ADDR);
     c8->memory[addr] = value;
 }
-
 bool c8_key_pressed(struct chip8 *c8, uint8_t key)
 {
-    return c8->keyboard[key + 1];
+    return c8->keyboard[key] > 0 ? true : false;
 }
 
 uint8_t c8_key_await(struct chip8 *c8)
 {
-    return rand() % 0xF + 1;
+    while (true)
+    {
+        for (int i = 0; i < 16; i++)
+        {
+            if (c8_key_pressed(c8, i))
+            {
+                return i;
+            }
+        }        
+        c8_process_input(c8);
+    }
 }
 
 static void c8_print(struct chip8 *c8)
@@ -179,6 +241,9 @@ static void c8_print(struct chip8 *c8)
 
 static bool c8_display_init(void)
 {
+    static const int DISPLAY_WIDTH = 640;
+    static const int DISPLAY_HEIGHT = 480;
+
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
     {
         fprintf(stderr, "Failed to init SDL: %s\n", SDL_GetError());
@@ -186,7 +251,7 @@ static bool c8_display_init(void)
     }
 
     window = SDL_CreateWindow(C8_WINDOW_TITLE, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 
-            640, 320, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
+         DISPLAY_WIDTH, DISPLAY_HEIGHT, SDL_WINDOW_SHOWN | 0);
     if (window == NULL)
     {
         fprintf(stderr, "Failed to create SDL Window: %s\n", SDL_GetError());
@@ -225,6 +290,24 @@ static void c8_process_flags(struct chip8 *c8)
     }
 }
 
+static void c8_handle_key_event(SDL_KeyboardEvent *key_event, struct chip8 *c8)
+{
+    SDL_Keysym key = key_event->keysym;
+    if (key.sym == SDLK_ESCAPE)
+    {
+        c8->alive = false;
+        return;
+    }
+
+    for (int index = 0; index < 16; index++)
+    {
+        if (key.sym == KEYMAP[index])
+        {
+            c8->keyboard[index] = key_event->type == SDL_KEYDOWN ? true : false;
+        }
+    }
+}
+
 static void c8_process_input(struct chip8 *c8)
 {
     SDL_Event event;
@@ -233,7 +316,13 @@ static void c8_process_input(struct chip8 *c8)
         switch (event.type)
         {
             case SDL_KEYDOWN:
-                c8_destroy(c8);
+            case SDL_KEYUP:
+                c8_handle_key_event(&event.key, c8);
+                break;
+            case SDL_QUIT:
+                c8->alive = false;
+                break;
+            default:
                 break;
         }
     }
